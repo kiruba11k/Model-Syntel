@@ -6,11 +6,12 @@ import time
 from datetime import datetime
 from typing import TypedDict, Annotated
 import operator
+from io import BytesIO
 
 # LangGraph and LangChain imports
 from langgraph.graph import StateGraph, START, END
 from langchain_groq import ChatGroq
-from langchain_community.tools.tavily_search import TavilySearchResults # <--- TAVILY IMPORT
+from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field, ValidationError
 
@@ -25,21 +26,22 @@ if not GROQ_API_KEY or not TAVILY_API_KEY:
 
 # --- LLM and Tool Initialization ---
 try:
-    # Use a powerful, fast Groq model
+    # Switched to the smaller Llama 3.1 8B for fast, reliable structured output
     llm_groq = ChatGroq(
         model="llama-3.1-8b-instant", 
         groq_api_key=GROQ_API_KEY,
         temperature=0
     )
     # Initialize Tavily search tool (max_results set to 5 for efficiency)
-    search_tool = TavilySearchResults(api_key=TAVILY_API_KEY, max_results=5) # <--- TAVILY INITIALIZATION
-    st.info("Using Groq (Llama 3 70B) for high-speed processing with Tavily Search.")
+    search_tool = TavilySearchResults(api_key=TAVILY_API_KEY, max_results=5)
+    st.info("Using Groq (Llama 3.1 8B) for high-speed processing with Tavily Search.")
 except Exception as e:
     st.error(f"Failed to initialize Groq or Tavily tools: {e}")
     st.stop()
 
 
 # --- Pydantic Output Schema (CompanyData) ---
+# NOTE: Descriptions are updated to mandate source/link inclusion in the string value.
 class CompanyData(BaseModel):
     # Basic Company Info
     linkedin_url: str = Field(description="LinkedIn URL and source/confidence.")
@@ -47,19 +49,19 @@ class CompanyData(BaseModel):
     industry_category: str = Field(description="Industry category and source.")
     employee_count_linkedin: str = Field(description="Employee count range and source.")
     headquarters_location: str = Field(description="Headquarters city, country, and source.")
-    revenue_source: str = Field(description="Revenue data point and specific source (ZoomInfo/Owler/Apollo/News).")
+    revenue_source: str = Field(description="Revenue data point and specific source (ZoomInfo/Owler/Apollo/News/Link).")
     
     # Core Research Fields
-    branch_network_count: str = Field(description="Number of branches/facilities mentioned online and source.")
-    expansion_news_12mo: str = Field(description="Summary of expansion news in the last 12 months and source link.")
-    digital_transformation_initiatives: str = Field(description="Details on smart infra or digital programs and source link.")
-    it_leadership_change: str = Field(description="Name and title of new CIO/CTO/Head of Infra if changed recently and source link.")
-    existing_network_vendors: str = Field(description="Mentioned network vendors or tech stack and source.")
-    wifi_lan_tender_found: str = Field(description="Yes/No and source link if a tender was found.")
-    iot_automation_edge_integration: str = Field(description="Details on IoT/Automation/Edge mentions and source link.")
-    cloud_adoption_gcc_setup: str = Field(description="Details on Cloud Adoption or Global Capability Centers (GCC) and source link.")
-    physical_infrastructure_signals: str = Field(description="Any physical infra signals (new office, factory etc) and source link.")
-    it_infra_budget_capex: str = Field(description="IT Infra Budget or Capex allocation details and source.")
+    branch_network_count: str = Field(description="Number of branches/facilities, capacity mentioned online, **INCLUDING THE SOURCE/LINK**.")
+    expansion_news_12mo: str = Field(description="Summary of expansion news, **INCLUDING THE SOURCE/LINK**.")
+    digital_transformation_initiatives: str = Field(description="Details on smart infra or digital programs, **INCLUDING THE SOURCE/LINK**.")
+    it_leadership_change: str = Field(description="Name and title of new CIO/CTO/Head of Infra if changed recently, **INCLUDING THE SOURCE/LINK**.")
+    existing_network_vendors: str = Field(description="Mentioned network vendors or tech stack, **INCLUDING THE SOURCE/LINK**.")
+    wifi_lan_tender_found: str = Field(description="Yes/No and source link if a tender was found, **INCLUDING THE SOURCE/LINK**.")
+    iot_automation_edge_integration: str = Field(description="Details on IoT/Automation/Edge mentions, **INCLUDING THE SOURCE/LINK**.")
+    cloud_adoption_gcc_setup: str = Field(description="Details on Cloud Adoption or Global Capability Centers (GCC), **INCLUDING THE SOURCE/LINK**.")
+    physical_infrastructure_signals: str = Field(description="Any physical infra signals (new office, factory etc), **INCLUDING THE SOURCE/LINK**.")
+    it_infra_budget_capex: str = Field(description="IT Infra Budget or Capex allocation details, **INCLUDING THE SOURCE/LINK**.")
     
     # Analysis Fields
     why_relevant_to_syntel: str = Field(description="Why this company is a relevant lead for Syntel (based on all data).")
@@ -92,9 +94,9 @@ def research_node(state: AgentState) -> AgentState:
     )
     
     # Execute the search tool
-    search_results = search_tool.run(search_query) # .run() method is consistent
+    search_results = search_tool.run(search_query)
     
-    # Prompt for LLM to process raw search results
+    # Prompt for LLM to process raw search results - Mandating sources
     research_prompt = f"""
     You are an expert Business Intelligence Researcher. Your goal is to find specific, citable data points for {company}.
     
@@ -104,7 +106,7 @@ def research_node(state: AgentState) -> AgentState:
     ---
     
     Based ONLY on the search results, generate comprehensive research notes for the fields listed in the final Pydantic schema (website, LinkedIn, revenue, expansion, IT leadership, vendors, etc.).
-    CRITICAL: For every data point, provide the data AND a source reference. If a data point is not found, state: 'Not Found (No Source)'. 
+    **CRITICAL:** For every data point, you MUST provide the data AND a source reference or link in the same string. If a data point is not found, state: 'Not Found (No Source)'. 
     
     Output the raw research notes as a single block of text.
     """
@@ -128,7 +130,7 @@ def validation_node(state: AgentState) -> AgentState:
     validation_prompt = f"""
     You are a Data Quality Specialist. Review the raw research notes and prepare them for final JSON formatting.
     
-    1.  Ensure all required data fields are clearly separated and assigned a value (either the found data + source, or 'Not Found (No Source)').
+    1.  Ensure all required data fields are clearly separated and assigned a value (either the found data + source/link, or 'Not Found (No Source)').
     2.  Calculate the 'Intent Scoring' (1-10) based on buying signals detected (expansion, IT budget, IT leadership changes, IoT/Cloud adoption). If no signals are found, set the score to **0**.
     3.  Generate the 'Why Relevent to Syntel' analysis based on the strongest signals.
 
@@ -157,10 +159,11 @@ def formatter_node(state: AgentState) -> AgentState:
     
     # Use Groq's structured output capability to force compliance with the schema
     formatting_prompt = f"""
-    You are a JSON Schema Specialist. Your task is to convert the following validated data into the exact JSON format defined by the CompanyData Pydantic schema.
+    You are a **STRICT** JSON Schema Specialist. Your task is to convert the following validated data into the **EXACT** JSON format defined by the CompanyData Pydantic schema.
     
-    - **CRITICAL**: Every single field in the Pydantic schema must be present.
-    - If a value is 'Not Found (No Source)', use that string for string fields.
+    - **CRITICAL**: The final JSON MUST NOT contain any fields not defined in the schema. DO NOT create fields ending in '_source', '_link', or similar.
+    - Every single field in the Pydantic schema must be present.
+    - The content of each string field MUST contain the data and the source/link as instructed.
     - **intent_scoring MUST be an integer (1-10 or 0).**
     
     Validated Data:
@@ -370,6 +373,17 @@ if submitted:
                 
                 # Generate the final DataFrame for download consistency
                 final_df_download = format_data_for_display(company_input, validated_data)
+                
+                # --- Excel Download Helper ---
+                def to_excel(df):
+                    """Converts dataframe to an in-memory Excel file."""
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        df.to_excel(writer, index=False, sheet_name='CompanyData')
+                    return output.getvalue()
+                
+                excel_data = to_excel(final_df_download)
+                excel_filename = f"{company_input.replace(' ', '_')}_data.xlsx"
 
                 # 1. Download JSON
                 json_filename = f"{company_input.replace(' ', '_')}_data.json"
@@ -389,7 +403,7 @@ if submitted:
                     file_name=csv_filename,
                     mime="text/csv"
                 )
-
+                
                 # 3. Download TSV (Tab Separated Values)
                 tsv_data = final_df_download.to_csv(index=False, sep='\t').encode('utf-8')
                 tsv_filename = f"{company_input.replace(' ', '_')}_data.tsv"
@@ -398,6 +412,14 @@ if submitted:
                     data=tsv_data,
                     file_name=tsv_filename,
                     mime="text/tab-separated-values"
+                )
+                
+                # 4. Download Excel (XLSX)
+                st.download_button(
+                    label="Download Excel Data",
+                    data=excel_data,
+                    file_name=excel_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
                         
         except Exception as e:
@@ -424,7 +446,7 @@ if st.session_state.research_history:
 # --- Instructions (Sidebar) ---
 with st.sidebar.expander("Setup Instructions ⚙️"):
     st.markdown("""
-    This app uses **LangGraph** for workflow control and **Groq (Llama 3 70B)** for high-speed AI processing.
+    This app uses **LangGraph** for workflow control and **Groq (Llama 3.1 8B)** for high-speed AI processing.
 
     **You MUST set both keys in your Streamlit Cloud secrets:**
 
@@ -435,7 +457,7 @@ with st.sidebar.expander("Setup Instructions ⚙️"):
         - **`GROQ_API_KEY`**: Get from [console.groq.com](https://console.groq.com/).
 
     **How the LangGraph Pipeline works:**
-    1.  **Research Node:** Executes Tavily search and generates raw notes.
+    1.  **Research Node:** Executes Tavily search and generates raw notes (Data + Source/Link).
     2.  **Validation Node:** Reviews and enriches data, calculates Intent Score (0-10).
     3.  **Formatter Node:** Uses Groq's structured output to guarantee perfect Pydantic JSON.
     """)
