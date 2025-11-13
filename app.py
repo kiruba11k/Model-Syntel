@@ -89,13 +89,13 @@ Syntel (now Atos Syntel/Eviden) specializes in:
 # --- Graph Nodes (Updated Prompts) ---
 
 def research_node(state: AgentState) -> AgentState:
-    """Node 1: Executes deep search and generates raw notes using multiple targeted queries."""
-    st.session_state.status_text.info(f"Phase 1/3: Conducting deep, multi-query search for {state['company_name']}...")
+    """Node 1: Executes deep search, summarizes results, and generates raw notes."""
+    st.session_state.status_text.info(f"Phase 1/3: Conducting deep, multi-query search and summarizing results for {state['company_name']}...")
     st.session_state.progress_bar.progress(33)
     
     company = state["company_name"]
     
-    # --- FIXED: Use a list of targeted search queries for better coverage ---
+    # --- Step 1: Targeted Search Queries (Same as before) ---
     search_queries = [
         f"'{company}' 'annual report' OR 'investor presentation' revenue headcount",
         f"'{company}' 'digital transformation' 'IT strategy' 'Cloud adoption'",
@@ -104,30 +104,55 @@ def research_node(state: AgentState) -> AgentState:
         f"'{company}' 'IoT' OR 'Automation' 'edge computing' logistics"
     ]
     
-    # Execute each query and consolidate results
-    all_search_results = []
-    for query in search_queries:
-        # Increase max_results for deeper search on each query
-        results = search_tool.run(query) 
-        all_search_results.append(f"--- Search Query: {query} ---\n{results}")
-
-    raw_search_results = "\n\n".join(all_search_results)
+    summarized_results = []
     
+    # --- Step 2 & 3: Execute Search and Summarize Results ---
+    for query in search_queries:
+        # 1. Execute Search
+        results = search_tool.run(query) 
+        
+        # 2. Summarize the raw Tavily results to save tokens
+        summarization_prompt = f"""
+        You are a highly efficient text compressor. Your task is to extract only the most crucial data points and the corresponding source links from the search results below for the company '{company}'.
+        
+        Focus specifically on: Revenue, facility count, leadership changes, digital project names, and specific IT budget figures.
+        
+        Raw Search Results for Query '{query}':
+        ---
+        {results}
+        ---
+        
+        Output a concise, bulleted summary. Ensure every data point includes its source link.
+        """
+        
+        # Use a fast LLM call for summarization
+        summary_llm = ChatGroq(model="llama-3.1-8b-instant", groq_api_key=GROQ_API_KEY, temperature=0.1)
+        
+        summary = summary_llm.invoke([
+            SystemMessage(content=summarization_prompt),
+            HumanMessage(content="Generate the concise, citable summary now.")
+        ]).content
+        
+        summarized_results.append(f"--- Summarized Data for Query: {query} ---\n{summary}")
+
+    compressed_search_results = "\n\n".join(summarized_results)
+    
+    # --- Step 4: Final Research Synthesis Prompt (Now uses smaller input) ---
     research_prompt = f"""
     You are an expert Business Intelligence Researcher. Your goal is to find specific, citable data points for {company}.
     
-    You have performed a deep search using multiple targeted queries (including investor filings, annual reports, and press releases).
+    You have pre-processed a deep search and have the following COMPRESSED, highly relevant data summaries.
     
-    Consolidated Search Results:
+    Compressed Search Summaries:
     ---
-    {raw_search_results}
+    {compressed_search_results}
     ---
     
-    Based ONLY on the consolidated search results, generate comprehensive research notes for the fields listed in the final Pydantic schema.
+    Based ONLY on the compressed summaries, generate comprehensive research notes for the fields listed in the final Pydantic schema.
     
     **CRITICAL:** 1. For every data point, you **MUST** provide the data **AND** a **SOURCE LINK** in the same string.
-    2. If a data point is not found after aggressively searching the provided results, state: '**Not Found (No Source)**'.
-    3. Synthesize data from the highest-quality sources (e.g., annual reports are better than random news articles).
+    2. If a data point is not found in the summaries, state: '**Not Found (No Source)**'.
+    3. Synthesize the final answer for each field from the summaries provided.
     
     Output the raw research notes as a single block of text.
     """
@@ -138,7 +163,6 @@ def research_node(state: AgentState) -> AgentState:
     ]).content
 
     return {"raw_research": raw_research}
-
 
 def validation_node(state: AgentState) -> AgentState:
     """Node 2: Validates the raw notes and calculates the Intent Score and Relevance."""
