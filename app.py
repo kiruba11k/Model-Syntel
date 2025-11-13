@@ -10,17 +10,17 @@ import operator
 # LangGraph and LangChain imports
 from langgraph.graph import StateGraph, START, END
 from langchain_groq import ChatGroq
-from langchain_community.tools.serper import SerperDevTool
+from langchain_community.tools.tavily_search import TavilySearchResults # <--- TAVILY IMPORT
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field, ValidationError
 
 # --- Configuration & Environment Setup ---
-# You MUST set GROQ_API_KEY and SERPER_API_KEY in Streamlit secrets
-SERPER_API_KEY = st.secrets.get("SERPER_API_KEY")
+# You MUST set GROQ_API_KEY and TAVILY_API_KEY in Streamlit secrets
+TAVILY_API_KEY = st.secrets.get("TAVILY_API_KEY")
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY")
 
-if not GROQ_API_KEY or not SERPER_API_KEY:
-    st.error("❌ ERROR: Both GROQ_API_KEY and SERPER_API_KEY must be set in Streamlit secrets.")
+if not GROQ_API_KEY or not TAVILY_API_KEY:
+    st.error("ERROR: Both GROQ_API_KEY and TAVILY_API_KEY must be set in Streamlit secrets.")
     st.stop()
 
 # --- LLM and Tool Initialization ---
@@ -31,10 +31,11 @@ try:
         groq_api_key=GROQ_API_KEY,
         temperature=0
     )
-    search_tool = SerperDevTool(api_key=SERPER_API_KEY)
-    st.info("Using Groq (Llama 3 70B) for high-speed processing.")
+    # Initialize Tavily search tool (max_results set to 5 for efficiency)
+    search_tool = TavilySearchResults(api_key=TAVILY_API_KEY, max_results=5) # <--- TAVILY INITIALIZATION
+    st.info("Using Groq (Llama 3 70B) for high-speed processing with Tavily Search.")
 except Exception as e:
-    st.error(f"Failed to initialize Groq or Serper tools: {e}")
+    st.error(f"Failed to initialize Groq or Tavily tools: {e}")
     st.stop()
 
 
@@ -91,7 +92,7 @@ def research_node(state: AgentState) -> AgentState:
     )
     
     # Execute the search tool
-    search_results = search_tool.run(search_query)
+    search_results = search_tool.run(search_query) # .run() method is consistent
     
     # Prompt for LLM to process raw search results
     research_prompt = f"""
@@ -314,7 +315,7 @@ if submitted:
             st.session_state.research_history.append(research_entry)
             
             # --- Display Tabs ---
-            tab1, tab2, tab3 = st.tabs(["📊 Final Report Table", "📋 Detailed View", "📈 Analysis Summary"])
+            tab1, tab2, tab3 = st.tabs(["Final Report Table", "Detailed View", "Analysis Summary"])
             
             with tab1:
                 st.subheader(f"Final Business Intelligence Report for {company_input}")
@@ -326,7 +327,6 @@ if submitted:
                 st.subheader("Detailed Research Results")
                 
                 categories = {
-                    # ... (categories list as before, using validated_data.dict())
                     "Basic Company Info": [
                         "linkedin_url", "company_website_url", "industry_category",
                         "employee_count_linkedin", "headquarters_location", "revenue_source"
@@ -405,8 +405,8 @@ if submitted:
             st.error(f"Research failed: {type(e).__name__} - {str(e)}")
             st.markdown("""
             **Common Issues:**
-            - Check your **`GROQ_API_KEY`** and **`SERPER_API_KEY`** in secrets.
-            - Groq has very high speed but still has limits; try waiting 10-15 seconds before retrying.
+            - Check your **`GROQ_API_KEY`** and **`TAVILY_API_KEY`** in secrets.
+            - Tavily has a generous free tier, but check your usage if the error is API-related.
             """)
 
 # --- Research History (Sidebar) ---
@@ -429,13 +429,13 @@ with st.sidebar.expander("Setup Instructions ⚙️"):
     **You MUST set both keys in your Streamlit Cloud secrets:**
 
     1.  **Search Tool:**
-        - `SERPER_API_KEY`: Get from [serper.dev](https://serper.dev/).
+        - **`TAVILY_API_KEY`**: Get from [tavily.com](https://tavily.com/).
     
     2.  **Language Model (LLM):**
         - **`GROQ_API_KEY`**: Get from [console.groq.com](https://console.groq.com/).
 
     **How the LangGraph Pipeline works:**
-    1.  **Research Node:** Executes Serper search and generates raw notes.
+    1.  **Research Node:** Executes Tavily search and generates raw notes.
     2.  **Validation Node:** Reviews and enriches data, calculates Intent Score (0-10).
     3.  **Formatter Node:** Uses Groq's structured output to guarantee perfect Pydantic JSON.
     """)
