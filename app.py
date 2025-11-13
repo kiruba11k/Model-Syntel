@@ -10,7 +10,7 @@ import operator
 # LangGraph and LangChain imports
 from langgraph.graph import StateGraph, START, END
 from langchain_groq import ChatGroq
-from langchain_community.tools import SerperDevTool
+from langchain_community.tools.search.serper import SerperDevTool
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field, ValidationError
 
