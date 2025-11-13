@@ -89,31 +89,45 @@ Syntel (now Atos Syntel/Eviden) specializes in:
 # --- Graph Nodes (Updated Prompts) ---
 
 def research_node(state: AgentState) -> AgentState:
-    """Node 1: Executes deep search and generates raw notes."""
-    st.session_state.status_text.info(f"Phase 1/3: Conducting deep search for {state['company_name']}...")
+    """Node 1: Executes deep search and generates raw notes using multiple targeted queries."""
+    st.session_state.status_text.info(f"Phase 1/3: Conducting deep, multi-query search for {state['company_name']}...")
     st.session_state.progress_bar.progress(33)
     
     company = state["company_name"]
-    # Aggressive search query to maximize data retrieval across the required fields
-    search_query = (
-        f"'{company}' 'digital transformation' 'IT budget' 'CIO' 'expansion news' 'network tender' OR 'IoT adoption' OR 'Cloud adoption' AND (website OR 'LinkedIn')"
-    )
     
-    search_results = search_tool.run(search_query)
+    # --- FIXED: Use a list of targeted search queries for better coverage ---
+    search_queries = [
+        f"'{company}' 'annual report' OR 'investor presentation' revenue headcount",
+        f"'{company}' 'digital transformation' 'IT strategy' 'Cloud adoption'",
+        f"'{company}' 'CIO' OR 'CTO' 'new leadership'",
+        f"'{company}' 'network tender' OR 'Wi-Fi upgrade' OR 'IT capex' 2024 2025",
+        f"'{company}' 'IoT' OR 'Automation' 'edge computing' logistics"
+    ]
+    
+    # Execute each query and consolidate results
+    all_search_results = []
+    for query in search_queries:
+        # Increase max_results for deeper search on each query
+        results = search_tool.run(query) 
+        all_search_results.append(f"--- Search Query: {query} ---\n{results}")
+
+    raw_search_results = "\n\n".join(all_search_results)
     
     research_prompt = f"""
     You are an expert Business Intelligence Researcher. Your goal is to find specific, citable data points for {company}.
     
-    Search Results:
+    You have performed a deep search using multiple targeted queries (including investor filings, annual reports, and press releases).
+    
+    Consolidated Search Results:
     ---
-    {search_results}
+    {raw_search_results}
     ---
     
-    Based ONLY on the search results, generate comprehensive research notes for the fields listed in the final Pydantic schema.
+    Based ONLY on the consolidated search results, generate comprehensive research notes for the fields listed in the final Pydantic schema.
     
     **CRITICAL:** 1. For every data point, you **MUST** provide the data **AND** a **SOURCE LINK** in the same string.
     2. If a data point is not found after aggressively searching the provided results, state: '**Not Found (No Source)**'.
-    3. Treat the search results as if they came from Google Search, DuckDuckGo, and Google News combined, and try to fill every single column.
+    3. Synthesize data from the highest-quality sources (e.g., annual reports are better than random news articles).
     
     Output the raw research notes as a single block of text.
     """
