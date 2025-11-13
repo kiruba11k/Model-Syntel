@@ -26,7 +26,7 @@ if not GROQ_API_KEY or not TAVILY_API_KEY:
 
 # --- LLM and Tool Initialization ---
 try:
-    # Switched to the smaller Llama 3.1 8B for fast, reliable structured output
+    # Use the smaller Llama 3.1 8B for fast, reliable structured output
     llm_groq = ChatGroq(
         model="llama-3.1-8b-instant", 
         groq_api_key=GROQ_API_KEY,
@@ -41,9 +41,9 @@ except Exception as e:
 
 
 # --- Pydantic Output Schema (CompanyData) ---
-# NOTE: Descriptions are updated to mandate source/link inclusion in the string value.
+# NOTE: Descriptions mandate source/link inclusion in the string value.
 class CompanyData(BaseModel):
-    # Basic Company Info
+    # Basic Company Info (using generic names that map to the final output columns)
     linkedin_url: str = Field(description="LinkedIn URL and source/confidence.")
     company_website_url: str = Field(description="Official company website URL and source/confidence.")
     industry_category: str = Field(description="Industry category and source.")
@@ -51,9 +51,9 @@ class CompanyData(BaseModel):
     headquarters_location: str = Field(description="Headquarters city, country, and source.")
     revenue_source: str = Field(description="Revenue data point and specific source (ZoomInfo/Owler/Apollo/News/Link).")
     
-    # Core Research Fields
+    # Core Research Fields - MUST ALIGN with the output column list
     branch_network_count: str = Field(description="Number of branches/facilities, capacity mentioned online, **INCLUDING THE SOURCE/LINK**.")
-    expansion_news_12mo: str = Field(description="Summary of expansion news, **INCLUDING THE SOURCE/LINK**.")
+    expansion_news_12mo: str = Field(description="Summary of expansion news in the last 12 months, **INCLUDING THE SOURCE/LINK**.")
     digital_transformation_initiatives: str = Field(description="Details on smart infra or digital programs, **INCLUDING THE SOURCE/LINK**.")
     it_leadership_change: str = Field(description="Name and title of new CIO/CTO/Head of Infra if changed recently, **INCLUDING THE SOURCE/LINK**.")
     existing_network_vendors: str = Field(description="Mentioned network vendors or tech stack, **INCLUDING THE SOURCE/LINK**.")
@@ -65,21 +65,20 @@ class CompanyData(BaseModel):
     
     # Analysis Fields
     why_relevant_to_syntel: str = Field(description="Why this company is a relevant lead for Syntel (based on all data).")
-    # Must be an integer for Pydantic validation. The LLM will be instructed to output 0 if no score can be calculated.
     intent_scoring: int = Field(description="Intent score 1-10 based on buying signals detected.") 
 
 
-# --- LangGraph State Definition ---
+# --- LangGraph State Definition (No Change) ---
 class AgentState(TypedDict):
     """Represents the shared context/state of the graph's execution."""
     company_name: str
     raw_research: str
-    validated_data_text: str # Holds text output from the validation node
-    final_json_data: dict # Holds the final Pydantic object as a dictionary
+    validated_data_text: str
+    final_json_data: dict
     messages: Annotated[list, operator.add] 
 
 
-# --- Graph Nodes (The Agents) ---
+# --- Graph Nodes (No Change in logic, prompts are now strongly enforced) ---
 
 def research_node(state: AgentState) -> AgentState:
     """Node 1: Executes deep search and generates raw notes."""
@@ -87,16 +86,12 @@ def research_node(state: AgentState) -> AgentState:
     st.session_state.progress_bar.progress(33)
     
     company = state["company_name"]
-    
-    # Compile a comprehensive search query
     search_query = (
         f"'{company}' revenue 'LinkedIn' employee count headquarters AND ('expansion' OR 'IT budget' OR 'CIO change' OR 'digital transformation')"
     )
     
-    # Execute the search tool
     search_results = search_tool.run(search_query)
     
-    # Prompt for LLM to process raw search results - Mandating sources
     research_prompt = f"""
     You are an expert Business Intelligence Researcher. Your goal is to find specific, citable data points for {company}.
     
@@ -105,7 +100,7 @@ def research_node(state: AgentState) -> AgentState:
     {search_results}
     ---
     
-    Based ONLY on the search results, generate comprehensive research notes for the fields listed in the final Pydantic schema (website, LinkedIn, revenue, expansion, IT leadership, vendors, etc.).
+    Based ONLY on the search results, generate comprehensive research notes for the fields listed in the final Pydantic schema.
     **CRITICAL:** For every data point, you MUST provide the data AND a source reference or link in the same string. If a data point is not found, state: 'Not Found (No Source)'. 
     
     Output the raw research notes as a single block of text.
@@ -157,7 +152,6 @@ def formatter_node(state: AgentState) -> AgentState:
     
     validated_data_text = state["validated_data_text"]
     
-    # Use Groq's structured output capability to force compliance with the schema
     formatting_prompt = f"""
     You are a **STRICT** JSON Schema Specialist. Your task is to convert the following validated data into the **EXACT** JSON format defined by the CompanyData Pydantic schema.
     
@@ -174,7 +168,6 @@ def formatter_node(state: AgentState) -> AgentState:
     Output ONLY the JSON object.
     """
 
-    # Use .with_structured_output(CompanyData) to enforce the schema
     final_pydantic_object = llm_groq.with_structured_output(CompanyData).invoke([
         SystemMessage(content=formatting_prompt),
         HumanMessage(content="Generate the final JSON for CompanyData.")
@@ -183,7 +176,7 @@ def formatter_node(state: AgentState) -> AgentState:
     return {"final_json_data": final_pydantic_object.dict()}
 
 
-# --- Graph Construction ---
+# --- Graph Construction (No Change) ---
 def build_graph():
     """Builds and compiles the sequential LangGraph workflow."""
     workflow = StateGraph(AgentState)
@@ -204,11 +197,12 @@ def build_graph():
 app = build_graph()
 
 
-# --- Helper Function for Custom Table Formatting ---
+# --- Helper Function for Custom Table Formatting (UPDATED) ---
 def format_data_for_display(company_input: str, validated_data: CompanyData) -> pd.DataFrame:
     """Transforms the Pydantic model into the specific 1-row table format requested."""
     data_dict = validated_data.dict()
     
+    # --- CRITICAL: MAPPING UPDATED TO INCLUDE ALL COMPLEX FIELDS ---
     mapping = {
         "Company Name": "company_name_placeholder",
         "LinkedIn URL": "linkedin_url",
@@ -217,6 +211,8 @@ def format_data_for_display(company_input: str, validated_data: CompanyData) -> 
         "Employee Count (LinkedIn)": "employee_count_linkedin",
         "Headquarters (Location)": "headquarters_location",
         "Revenue (ZoomInfo / Owler / Apollo)": "revenue_source",
+        
+        # All required complex fields mapped to their Pydantic key names
         "Branch Network / Facilities Count": "branch_network_count",
         "Expansion News (Last 12 Months)": "expansion_news_12mo",
         "Digital Transformation Initiatives / Smart Infra Programs": "digital_transformation_initiatives",
@@ -227,16 +223,17 @@ def format_data_for_display(company_input: str, validated_data: CompanyData) -> 
         "Cloud Adoption / GCC Setup": "cloud_adoption_gcc_setup",
         "Physical Infrastructure Signals": "physical_infrastructure_signals",
         "IT Infra Budget / Capex Allocation": "it_infra_budget_capex",
+        
         "Why Relevent to Syntel": "why_relevant_to_syntel",
         "Intent scoring": "intent_scoring",
     }
+    # ---------------------------------------------------------------------
     
     row_data = {}
     for display_col, pydantic_field in mapping.items():
         if display_col == "Company Name":
             row_data[display_col] = company_input 
         else:
-            # Ensure integer field is converted to string for display consistency
             if pydantic_field == "intent_scoring":
                  row_data[display_col] = str(data_dict.get(pydantic_field, "N/A"))
             else:
@@ -247,7 +244,7 @@ def format_data_for_display(company_input: str, validated_data: CompanyData) -> 
     return df
 
 
-# --- Streamlit UI ---
+# --- Streamlit UI (No Change) ---
 st.set_page_config(
     page_title="Syntel BI Agent (Groq/LangGraph)", 
     layout="wide"
@@ -378,6 +375,7 @@ if submitted:
                 def to_excel(df):
                     """Converts dataframe to an in-memory Excel file."""
                     output = BytesIO()
+                    # Ensure xlsxwriter is installed for multi-format Excel
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                         df.to_excel(writer, index=False, sheet_name='CompanyData')
                     return output.getvalue()
@@ -428,7 +426,7 @@ if submitted:
             st.markdown("""
             **Common Issues:**
             - Check your **`GROQ_API_KEY`** and **`TAVILY_API_KEY`** in secrets.
-            - Tavily has a generous free tier, but check your usage if the error is API-related.
+            - The LLM might struggle if the search results for a company are extremely poor.
             """)
 
 # --- Research History (Sidebar) ---
