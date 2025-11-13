@@ -1,0 +1,7 @@
+streamlit
+pandas
+langgraph
+langchain
+langchain-groq
+langchain-community
+pydantic
