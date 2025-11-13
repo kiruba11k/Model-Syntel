@@ -27,7 +27,7 @@ if not GROQ_API_KEY or not TAVILY_API_KEY:
 try:
     # Use a powerful, fast Groq model
     llm_groq = ChatGroq(
-        model="llama3-70b-8192", 
+        model="llama-3.1-8b-instant", 
         groq_api_key=GROQ_API_KEY,
         temperature=0
     )
