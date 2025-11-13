@@ -6,3 +6,4 @@ langchain-groq
 langchain-community
 pydantic
 langchain-core
+google-serper
