@@ -1,9 +1,8 @@
 streamlit
 pandas
-langgraph
-langchain
 langchain-groq
 langchain-community
+langgraph
 pydantic
-langchain-core
-google-serper
+tavily-python
+groq
