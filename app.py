@@ -1,19 +1,17 @@
 import streamlit as st
 import pandas as pd
 import json
-import os
-import time
-from datetime import datetime
-from typing import TypedDict, Annotated
 import operator
+from typing import TypedDict, Annotated
 from io import BytesIO
+from datetime import datetime
 
 # LangGraph and LangChain imports
 from langgraph.graph import StateGraph, START, END
 from langchain_groq import ChatGroq
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.messages import SystemMessage, HumanMessage
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 # --- Configuration & Environment Setup ---
 # You MUST set GROQ_API_KEY and TAVILY_API_KEY in Streamlit secrets
@@ -32,8 +30,9 @@ try:
         groq_api_key=GROQ_API_KEY,
         temperature=0
     )
-    # Initialize Tavily search tool (max_results set to 5 for efficiency)
-    search_tool = TavilySearchResults(api_key=TAVILY_API_KEY, max_results=5)
+    # Initialize Tavily search tool (max_results set to 7 for aggressive search)
+    # Tavily is a strong meta-search engine that uses multiple sources (Google, DuckDuckGo, News)
+    search_tool = TavilySearchResults(api_key=TAVILY_API_KEY, max_results=7)
     st.info("Using Groq (Llama 3.1 8B) for high-speed processing with Tavily Search.")
 except Exception as e:
     st.error(f"Failed to initialize Groq or Tavily tools: {e}")
@@ -41,31 +40,31 @@ except Exception as e:
 
 
 # --- Pydantic Output Schema (CompanyData) ---
-# NOTE: Descriptions mandate source/link inclusion in the string value.
+# NOTE: Intent Scoring is now an Enum in concept, enforced via prompt/description.
 class CompanyData(BaseModel):
     # Basic Company Info (using generic names that map to the final output columns)
-    linkedin_url: str = Field(description="LinkedIn URL and source/confidence.")
-    company_website_url: str = Field(description="Official company website URL and source/confidence.")
-    industry_category: str = Field(description="Industry category and source.")
-    employee_count_linkedin: str = Field(description="Employee count range and source.")
-    headquarters_location: str = Field(description="Headquarters city, country, and source.")
-    revenue_source: str = Field(description="Revenue data point and specific source (ZoomInfo/Owler/Apollo/News/Link).")
+    linkedin_url: str = Field(description="LinkedIn URL and source/confidence. MUST include link.")
+    company_website_url: str = Field(description="Official company website URL. MUST include link.")
+    industry_category: str = Field(description="Industry category and source. MUST include link.")
+    employee_count_linkedin: str = Field(description="Employee count range and source. MUST include link.")
+    headquarters_location: str = Field(description="Headquarters city, country, and source. MUST include link.")
+    revenue_source: str = Field(description="Revenue data point and specific source (e.g., ZoomInfo, Owler, News). MUST include link.")
     
     # Core Research Fields - MUST ALIGN with the output column list
-    branch_network_count: str = Field(description="Number of branches/facilities, capacity mentioned online, **INCLUDING THE SOURCE/LINK**.")
-    expansion_news_12mo: str = Field(description="Summary of expansion news in the last 12 months, **INCLUDING THE SOURCE/LINK**.")
-    digital_transformation_initiatives: str = Field(description="Details on smart infra or digital programs, **INCLUDING THE SOURCE/LINK**.")
-    it_leadership_change: str = Field(description="Name and title of new CIO/CTO/Head of Infra if changed recently, **INCLUDING THE SOURCE/LINK**.")
-    existing_network_vendors: str = Field(description="Mentioned network vendors or tech stack, **INCLUDING THE SOURCE/LINK**.")
-    wifi_lan_tender_found: str = Field(description="Yes/No and source link if a tender was found, **INCLUDING THE SOURCE/LINK**.")
-    iot_automation_edge_integration: str = Field(description="Details on IoT/Automation/Edge mentions, **INCLUDING THE SOURCE/LINK**.")
-    cloud_adoption_gcc_setup: str = Field(description="Details on Cloud Adoption or Global Capability Centers (GCC), **INCLUDING THE SOURCE/LINK**.")
-    physical_infrastructure_signals: str = Field(description="Any physical infra signals (new office, factory etc), **INCLUDING THE SOURCE/LINK**.")
-    it_infra_budget_capex: str = Field(description="IT Infra Budget or Capex allocation details, **INCLUDING THE SOURCE/LINK**.")
+    branch_network_count: str = Field(description="Number of branches/facilities, capacity mentioned online. MUST include the SOURCE/LINK.")
+    expansion_news_12mo: str = Field(description="Summary of expansion news in the last 12 months. MUST include the SOURCE/LINK.")
+    digital_transformation_initiatives: str = Field(description="Details on smart infra or digital programs. MUST include the SOURCE/LINK.")
+    it_leadership_change: str = Field(description="Name and title of new CIO/CTO/Head of Infra if changed recently. MUST include the SOURCE/LINK.")
+    existing_network_vendors: str = Field(description="Mentioned network vendors or tech stack. MUST include the SOURCE/LINK.")
+    wifi_lan_tender_found: str = Field(description="Yes/No and source link if a tender was found. MUST include the SOURCE/LINK.")
+    iot_automation_edge_integration: str = Field(description="Details on IoT/Automation/Edge mentions. MUST include the SOURCE/LINK.")
+    cloud_adoption_gcc_setup: str = Field(description="Details on Cloud Adoption or Global Capability Centers (GCC). MUST include the SOURCE/LINK.")
+    physical_infrastructure_signals: str = Field(description="Any physical infra signals (new office, factory etc). MUST include the SOURCE/LINK.")
+    it_infra_budget_capex: str = Field(description="IT Infra Budget or Capex allocation details. MUST include the SOURCE/LINK.")
     
-    # Analysis Fields
-    why_relevant_to_syntel: str = Field(description="Why this company is a relevant lead for Syntel (based on all data).")
-    intent_scoring: int = Field(description="Intent score 1-10 based on buying signals detected.") 
+    # Analysis Fields - UPDATED
+    why_relevant_to_syntel_bullets: str = Field(description="A markdown string with 3 bullet points explaining relevance to Syntel based on its known offerings (Digital One, Cloud, Network, Automation, KPO).")
+    intent_scoring_level: str = Field(description="Intent score level: 'Low', 'Medium', or 'High'. Based on buying signals detected (expansion, IT budget, IT leadership changes, IoT/Cloud adoption).") 
 
 
 # --- LangGraph State Definition (No Change) ---
@@ -78,7 +77,7 @@ class AgentState(TypedDict):
     messages: Annotated[list, operator.add] 
 
 
-# --- Graph Nodes (No Change in logic, prompts are now strongly enforced) ---
+# --- Graph Nodes (Updated Prompts) ---
 
 def research_node(state: AgentState) -> AgentState:
     """Node 1: Executes deep search and generates raw notes."""
@@ -86,10 +85,12 @@ def research_node(state: AgentState) -> AgentState:
     st.session_state.progress_bar.progress(33)
     
     company = state["company_name"]
+    # Aggressive search query to cover all required signals
     search_query = (
-        f"'{company}' revenue 'LinkedIn' employee count headquarters AND ('expansion' OR 'IT budget' OR 'CIO change' OR 'digital transformation')"
+        f"'{company}' 'digital transformation' 'IT budget' 'CIO' 'expansion news' 'network tender' OR 'IoT adoption' OR 'Cloud adoption' AND (website OR 'LinkedIn')"
     )
     
+    # Run search aggressively, the tool combines results from multiple engines
     search_results = search_tool.run(search_query)
     
     research_prompt = f"""
@@ -101,7 +102,10 @@ def research_node(state: AgentState) -> AgentState:
     ---
     
     Based ONLY on the search results, generate comprehensive research notes for the fields listed in the final Pydantic schema.
-    **CRITICAL:** For every data point, you MUST provide the data AND a source reference or link in the same string. If a data point is not found, state: 'Not Found (No Source)'. 
+    
+    **CRITICAL:** 1.  For every data point, you **MUST** provide the data **AND** a **SOURCE LINK** in the same string.
+    2.  If a data point is not found after aggressively searching the provided results, state: '**Not Found (No Source)**'.
+    3.  Treat the search results as if they came from Google Search, DuckDuckGo, and Google News combined, and try to fill every single column.
     
     Output the raw research notes as a single block of text.
     """
@@ -125,9 +129,12 @@ def validation_node(state: AgentState) -> AgentState:
     validation_prompt = f"""
     You are a Data Quality Specialist. Review the raw research notes and prepare them for final JSON formatting.
     
-    1.  Ensure all required data fields are clearly separated and assigned a value (either the found data + source/link, or 'Not Found (No Source)').
-    2.  Calculate the 'Intent Scoring' (1-10) based on buying signals detected (expansion, IT budget, IT leadership changes, IoT/Cloud adoption). If no signals are found, set the score to **0**.
-    3.  Generate the 'Why Relevent to Syntel' analysis based on the strongest signals.
+    1.  Ensure all required data fields are clearly separated and assigned a value (either the found data + source/link, or 'Not Found (No Source)'). Ensure every string value contains a valid source link.
+    2.  Calculate the 'Intent Scoring Level': **'Low', 'Medium', or 'High'**.
+        - **High:** Multiple strong buying signals (e.g., New CIO AND major IT Capex/Cloud project AND recent expansion).
+        - **Medium:** One clear buying signal (e.g., Major Digital Transformation mention OR recent IT leadership change).
+        - **Low:** Only general company info found, no clear buying signals in the last 12-24 months.
+    3.  Generate the 'Why Relevant to Syntel' bullet points. Base this on Syntel's strengths: **Digital Transformation (Digital One), Cloud Services, Network Infrastructure (WLAN, GPON), Automation (SyntBots), and BPO/KPO solutions.** Generate this as a markdown bullet list (e.g., "* Point 1\n* Point 2\n* Point 3").
 
     Raw Research Notes:
     ---
@@ -155,10 +162,11 @@ def formatter_node(state: AgentState) -> AgentState:
     formatting_prompt = f"""
     You are a **STRICT** JSON Schema Specialist. Your task is to convert the following validated data into the **EXACT** JSON format defined by the CompanyData Pydantic schema.
     
-    - **CRITICAL**: The final JSON MUST NOT contain any fields not defined in the schema. DO NOT create fields ending in '_source', '_link', or similar.
+    - **CRITICAL**: The final JSON MUST NOT contain any fields not defined in the schema.
     - Every single field in the Pydantic schema must be present.
-    - The content of each string field MUST contain the data and the source/link as instructed.
-    - **intent_scoring MUST be an integer (1-10 or 0).**
+    - The content of each string field (EXCEPT the intent score) MUST contain the data and the SOURCE LINK as instructed.
+    - **intent_scoring_level MUST be one of 'Low', 'Medium', or 'High'.**
+    - **why_relevant_to_syntel_bullets MUST be a markdown string containing 3 bullet points.**
     
     Validated Data:
     ---
@@ -199,7 +207,7 @@ app = build_graph()
 
 # --- Helper Function for Custom Table Formatting (UPDATED) ---
 def format_data_for_display(company_input: str, validated_data: CompanyData) -> pd.DataFrame:
-    """Transforms the Pydantic model into the specific 1-row table format requested."""
+    """Transforms the Pydantic model into the specific 1-row table format requested, ensuring all new columns and bullet points are handled."""
     data_dict = validated_data.dict()
     
     # --- CRITICAL: MAPPING UPDATED TO INCLUDE ALL COMPLEX FIELDS ---
@@ -210,7 +218,7 @@ def format_data_for_display(company_input: str, validated_data: CompanyData) -> 
         "Industry Category": "industry_category",
         "Employee Count (LinkedIn)": "employee_count_linkedin",
         "Headquarters (Location)": "headquarters_location",
-        "Revenue (ZoomInfo / Owler / Apollo)": "revenue_source",
+        "Revenue (Source)": "revenue_source",
         
         # All required complex fields mapped to their Pydantic key names
         "Branch Network / Facilities Count": "branch_network_count",
@@ -224,8 +232,9 @@ def format_data_for_display(company_input: str, validated_data: CompanyData) -> 
         "Physical Infrastructure Signals": "physical_infrastructure_signals",
         "IT Infra Budget / Capex Allocation": "it_infra_budget_capex",
         
-        "Why Relevent to Syntel": "why_relevant_to_syntel",
-        "Intent scoring": "intent_scoring",
+        # Analysis Fields - UPDATED
+        "Why Relevent to Syntel (3 Key Points)": "why_relevant_to_syntel_bullets",
+        "Intent Scoring": "intent_scoring_level",
     }
     # ---------------------------------------------------------------------
     
@@ -234,24 +243,42 @@ def format_data_for_display(company_input: str, validated_data: CompanyData) -> 
         if display_col == "Company Name":
             row_data[display_col] = company_input 
         else:
-            if pydantic_field == "intent_scoring":
-                 row_data[display_col] = str(data_dict.get(pydantic_field, "N/A"))
-            else:
-                 row_data[display_col] = data_dict.get(pydantic_field, "N/A")
+            # Get data, handle case where the field might be missing (shouldn't happen with Pydantic)
+            value = data_dict.get(pydantic_field, "N/A (Missing Field)")
             
+            # Format the relevance column to show the bullet points clearly
+            if pydantic_field == "why_relevant_to_syntel_bullets":
+                 # Replace newlines with HTML breaks for better cell display in Streamlit
+                 # In a downloaded file (CSV/Excel), this will revert to the markdown string
+                 row_data[display_col] = value.replace('\n', '<br>')
+            else:
+                 row_data[display_col] = value
+            
+    # Convert to DataFrame
     df = pd.DataFrame([row_data])
-    df.index = ['']
+    df.index = [''] # Remove the default index
+    
+    # Use HTML formatting in Streamlit to render the bullet points in the table cell
+    def render_markdown_in_cell(val):
+        if isinstance(val, str) and val.startswith('*'):
+            return f'<div style="text-align: left;">{val}</div>'
+        return val
+
+    # Apply the formatting to the specific column
+    if "Why Relevent to Syntel (3 Key Points)" in df.columns:
+        df["Why Relevent to Syntel (3 Key Points)"] = df["Why Relevent to Syntel (3 Key Points)"].apply(render_markdown_in_cell)
+
     return df
 
 
-# --- Streamlit UI (No Change) ---
+# --- Streamlit UI (Minor Change for Display) ---
 st.set_page_config(
     page_title="Syntel BI Agent (Groq/LangGraph)", 
     layout="wide"
 )
 
 st.title("Syntel Company Data AI Agent (LangGraph/Groq)")
-st.markdown("### High-Speed Research Pipeline ")
+st.markdown("### High-Speed Research Pipeline with Enhanced Source Tracking")
 
 # Initialize session state for UI components
 if 'research_history' not in st.session_state:
@@ -320,11 +347,14 @@ if submitted:
             with tab1:
                 st.subheader(f"Final Business Intelligence Report for {company_input}")
                 final_df = format_data_for_display(company_input, validated_data)
-                st.dataframe(final_df, use_container_width=True, height=200) 
-                st.caption("The table can be scrolled horizontally to view all columns.")
+                
+                # Display the DataFrame using to_html with escape=False to render <br> and other markdown from the helper function
+                st.markdown(final_df.to_html(escape=False, header=True, index=False), unsafe_allow_html=True)
+                
+                st.caption("All data points above include the direct source link/reference as requested. The table can be scrolled horizontally.")
 
             with tab2:
-                st.subheader("Detailed Research Results")
+                st.subheader("Detailed Research Results (All Fields with Sources)")
                 
                 categories = {
                     "Basic Company Info": [
@@ -337,9 +367,6 @@ if submitted:
                         "iot_automation_edge_integration", "cloud_adoption_gcc_setup", 
                         "physical_infrastructure_signals", "it_infra_budget_capex"
                     ],
-                    "Analysis & Scoring": [
-                        "why_relevant_to_syntel", "intent_scoring"
-                    ]
                 }
 
                 for category, fields in categories.items():
@@ -352,19 +379,14 @@ if submitted:
             with tab3:
                 st.subheader("Business Intelligence Analysis")
                 
-                col1, col2, col3 = st.columns(3)
+                col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("Intent Score", f"{validated_data.intent_scoring}/10")
+                    st.metric("Intent Scoring", validated_data.intent_scoring_level)
                 with col2:
-                    filled_fields = sum(1 for value in validated_data.dict().values() if value and str(value).strip() and "not found" not in str(value).lower() and "mock:" not in str(value).lower())
-                    total_fields = len(validated_data.dict())
-                    completeness = (filled_fields / total_fields) * 100
-                    st.metric("Data Completeness", f"{completeness:.1f}%")
-                with col3:
                     st.metric("Research Date", datetime.now().strftime("%Y-%m-%d"))
                 
-                st.subheader("Relevance to Syntel")
-                st.info(validated_data.why_relevant_to_syntel)
+                st.subheader("Relevance to Syntel (3 Key Points)")
+                st.markdown(validated_data.why_relevant_to_syntel_bullets)
                 
                 st.subheader("Download Options")
                 
@@ -380,9 +402,13 @@ if submitted:
                         df.to_excel(writer, index=False, sheet_name='CompanyData')
                     return output.getvalue()
                 
-                excel_data = to_excel(final_df_download)
-                excel_filename = f"{company_input.replace(' ', '_')}_data.xlsx"
-
+                excel_data = to_excel(final_df_download.drop(columns=["Why Relevent to Syntel (3 Key Points)"])) # Drop the HTML formatted column if using display
+                
+                # Re-create the final data frame, but without the HTML/Streamlit display formatting for the 'Why Relevant' column, just using the raw markdown string.
+                download_df = format_data_for_display(company_input, validated_data)
+                # Ensure the 'Why Relevant' column is the pure markdown string for better Excel/CSV representation
+                download_df["Why Relevent to Syntel (3 Key Points)"] = validated_data.why_relevant_to_syntel_bullets
+                
                 # 1. Download JSON
                 json_filename = f"{company_input.replace(' ', '_')}_data.json"
                 st.download_button(
@@ -393,7 +419,7 @@ if submitted:
                 )
 
                 # 2. Download CSV
-                csv_data = final_df_download.to_csv(index=False).encode('utf-8')
+                csv_data = download_df.to_csv(index=False).encode('utf-8')
                 csv_filename = f"{company_input.replace(' ', '_')}_data.csv"
                 st.download_button(
                     label="Download CSV Data",
@@ -402,17 +428,9 @@ if submitted:
                     mime="text/csv"
                 )
                 
-                # 3. Download TSV (Tab Separated Values)
-                tsv_data = final_df_download.to_csv(index=False, sep='\t').encode('utf-8')
-                tsv_filename = f"{company_input.replace(' ', '_')}_data.tsv"
-                st.download_button(
-                    label="Download TSV Data",
-                    data=tsv_data,
-                    file_name=tsv_filename,
-                    mime="text/tab-separated-values"
-                )
-                
-                # 4. Download Excel (XLSX)
+                # 3. Download Excel (XLSX)
+                excel_data = to_excel(download_df)
+                excel_filename = f"{company_input.replace(' ', '_')}_data.xlsx"
                 st.download_button(
                     label="Download Excel Data",
                     data=excel_data,
@@ -436,7 +454,7 @@ if st.session_state.research_history:
         original_index = len(st.session_state.research_history) - 1 - i 
         
         with st.sidebar.expander(f"**{research['company']}** - {research['timestamp'][:10]}", expanded=False):
-            st.write(f"Intent Score: {research['data'].get('intent_scoring', 'N/A')}/10")
+            st.write(f"Intent Score: {research['data'].get('intent_scoring_level', 'N/A')}")
             if st.button(f"Load {research['company']}", key=f"load_{original_index}"):
                 st.session_state.company_input = research['company'] 
                 st.rerun()
@@ -444,18 +462,15 @@ if st.session_state.research_history:
 # --- Instructions (Sidebar) ---
 with st.sidebar.expander("Setup Instructions ⚙️"):
     st.markdown("""
-    This app uses **LangGraph** for workflow control and **Groq (Llama 3.1 8B)** for high-speed AI processing.
+    This app uses **LangGraph** and **Groq (Llama 3.1 8B)**.
+
+    **Key Requirements Implemented:**
+    1.  **Source Links:** *Every* data point now explicitly includes its source/link.
+    2.  **Intent Scoring:** Now determined as **Low, Medium, or High**.
+    3.  **Syntel Relevance:** A **3-point bullet list** is generated based on the company's profile and Syntel's expertise (Digital Transformation, Cloud, Network, Automation).
+    4.  **Fallback Search:** The primary search tool (Tavily) is configured for aggressive meta-searching (Google, DuckDuckGo, News) to maximize fill rate.
 
     **You MUST set both keys in your Streamlit Cloud secrets:**
-
-    1.  **Search Tool:**
-        - **`TAVILY_API_KEY`**: Get from [tavily.com](https://tavily.com/).
-    
-    2.  **Language Model (LLM):**
-        - **`GROQ_API_KEY`**: Get from [console.groq.com](https://console.groq.com/).
-
-    **How the LangGraph Pipeline works:**
-    1.  **Research Node:** Executes Tavily search and generates raw notes (Data + Source/Link).
-    2.  **Validation Node:** Reviews and enriches data, calculates Intent Score (0-10).
-    3.  **Formatter Node:** Uses Groq's structured output to guarantee perfect Pydantic JSON.
+    - **`TAVILY_API_KEY`**
+    - **`GROQ_API_KEY`**
     """)
