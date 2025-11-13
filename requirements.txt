@@ -5,4 +5,4 @@ langchain
 langchain-groq
 langchain-community
 pydantic
-serper
+langchain-core
