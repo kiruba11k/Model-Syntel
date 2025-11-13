@@ -32,13 +32,6 @@ try:
     )
     # Tavily is a strong meta-search engine that uses multiple sources (Google, DuckDuckGo, News)
     search_tool = TavilySearchResults(api_key=TAVILY_API_KEY, max_results=7)
-    # A separate LLM instance for summarization to avoid rate limiting the main process
-    summary_llm = ChatGroq(
-        model="llama-3.1-8b-instant", 
-        groq_api_key=GROQ_API_KEY, 
-        temperature=0.1 # Slightly higher temp for creative compression
-    )
-
     st.info("Using Groq (Llama 3.1 8B) for high-speed processing with Tavily Search.")
 except Exception as e:
     st.error(f"Failed to initialize Groq or Tavily tools: {e}")
@@ -46,6 +39,7 @@ except Exception as e:
 
 
 # --- Pydantic Output Schema (CompanyData) ---
+# NOTE: Descriptions mandate source/link inclusion and the new scoring/relevance format.
 class CompanyData(BaseModel):
     # Basic Company Info
     linkedin_url: str = Field(description="LinkedIn URL. MUST include link/source.")
@@ -83,6 +77,7 @@ class AgentState(TypedDict):
 
 
 # --- Syntel Core Offerings for Analysis Node ---
+# This research is static and derived from the initial search result 1.1, 1.2, 1.4, 1.5, 1.6
 SYNTEL_EXPERTISE = """
 Syntel (now Atos Syntel/Eviden) specializes in:
 1. IT Automation/RPA: Via its proprietary platform, **SyntBots**.
@@ -94,77 +89,45 @@ Syntel (now Atos Syntel/Eviden) specializes in:
 # --- Graph Nodes (Updated Prompts) ---
 
 def research_node(state: AgentState) -> AgentState:
-    """
-    Node 1: Executes deep, site-targeted search, summarizes results (to prevent 413 error), 
-    and generates raw notes.
-    """
-    st.session_state.status_text.info(f"Phase 1/3: Conducting deep, source-targeted search and summarizing results for {state['company_name']}...")
+    """Node 1: Executes deep search and generates raw notes using multiple targeted queries."""
+    st.session_state.status_text.info(f"Phase 1/3: Conducting deep, multi-query search for {state['company_name']}...")
     st.session_state.progress_bar.progress(33)
     
     company = state["company_name"]
     
-    # --- Step 1: Targeted Search Queries - PRIORITIZING AUTHORITATIVE SITES ---
-    # We combine multiple site types to maximize data retrieval for 'Branch Network / Facilities Count'
+    # --- FIXED: Use a list of targeted search queries for better coverage ---
     search_queries = [
-        # 1. Company Website and high-ranking aggregators (for real-time locator)
-        f"'{company}' 'store locator' OR 'branch network' OR 'facilities count' site:{company}.com OR site:{company}.in OR site:linkedin.com OR site:crunchbase.com",
-        
-        # 2. Investor Filings / Official Government Data (for verified official counts and Revenue)
-        f"'{company}' 'annual report' OR 'investor presentation' 'pallets capacity' OR 'total number of facilities' site:sec.gov OR site:mca.gov.in OR site:banks.data.fdic.gov",
-        
-        # 3. Recent Expansion News (Press Releases and News portals)
-        f"'{company}' 'expansion news' OR 'new facility launch' 'press release' 'last 12 months' site:news.google.com OR site:data.gov.in",
-        
-        # 4. IT/Digital Signals (Cloud, CIO, Capex)
-        f"'{company}' 'IT capex' OR 'IT budget' 'CIO' 'digital transformation' 'IoT adoption'"
+        f"'{company}' 'annual report' OR 'investor presentation' revenue headcount",
+        f"'{company}' 'digital transformation' 'IT strategy' 'Cloud adoption'",
+        f"'{company}' 'CIO' OR 'CTO' 'new leadership'",
+        f"'{company}' 'network tender' OR 'Wi-Fi upgrade' OR 'IT capex' 2024 2025",
+        f"'{company}' 'IoT' OR 'Automation' 'edge computing' logistics"
     ]
     
-    summarized_results = []
-    
-    # --- Step 2 & 3: Execute Search and Summarize Results to avoid token limits (413 Error Fix) ---
+    # Execute each query and consolidate results
+    all_search_results = []
     for query in search_queries:
-        # 1. Execute Search (Tavily max_results=7 used)
+        # Increase max_results for deeper search on each query
         results = search_tool.run(query) 
-        
-        # 2. Summarize the raw Tavily results (using the dedicated summary_llm instance)
-        summarization_prompt = f"""
-        You are a highly efficient text compressor. Your task is to extract only the most crucial data points and the corresponding source links from the search results below for the company '{company}'.
-        
-        Focus specifically on: **Exact Branch/Facility Counts, Pallets Capacity, Geographic locations, Expansion/New Launch dates, IT Budget figures, and Leadership Changes.**
-        
-        Raw Search Results for Query '{query}':
-        ---
-        {results}
-        ---
-        
-        Output a concise, bulleted summary. Ensure every data point includes its source link.
-        """
-        
-        summary = summary_llm.invoke([
-            SystemMessage(content=summarization_prompt),
-            HumanMessage(content="Generate the concise, citable summary now.")
-        ]).content
-        
-        summarized_results.append(f"--- Summarized Data for Query: {query} ---\n{summary}")
+        all_search_results.append(f"--- Search Query: {query} ---\n{results}")
 
-    compressed_search_results = "\n\n".join(summarized_results)
+    raw_search_results = "\n\n".join(all_search_results)
     
-    # --- Step 4: Final Research Synthesis Prompt (Now uses smaller, compressed input) ---
     research_prompt = f"""
     You are an expert Business Intelligence Researcher. Your goal is to find specific, citable data points for {company}.
     
-    You have pre-processed a deep, source-targeted search and have the following COMPRESSED, highly relevant data summaries.
+    You have performed a deep search using multiple targeted queries (including investor filings, annual reports, and press releases).
     
-    Compressed Search Summaries:
+    Consolidated Search Results:
     ---
-    {compressed_search_results}
+    {raw_search_results}
     ---
     
-    Based ONLY on the compressed summaries, generate comprehensive research notes for the fields listed in the final Pydantic schema.
+    Based ONLY on the consolidated search results, generate comprehensive research notes for the fields listed in the final Pydantic schema.
     
     **CRITICAL:** 1. For every data point, you **MUST** provide the data **AND** a **SOURCE LINK** in the same string.
-    2. If a data point is not found in the summaries, state: '**Not Found (No Source)**'.
-    3. Synthesize the final answer for each field from the summaries provided, prioritizing official sources like Annual Reports or company press releases.
+    2. If a data point is not found after aggressively searching the provided results, state: '**Not Found (No Source)**'.
+    3. Synthesize data from the highest-quality sources (e.g., annual reports are better than random news articles).
     
     Output the raw research notes as a single block of text.
     """
@@ -467,8 +430,6 @@ with st.sidebar.expander("Setup & Key Requirements ✅"):
     * **Intent Scoring:** **Fulfilled**. Output is **Low, Medium, or High**.
     * **Syntel Relevance:** **Fulfilled**. A **3-point bullet list** is generated by cross-referencing company signals with Syntel's confirmed expertise (Digital One, SyntBots, KPO).
     * **Fallback Search:** **Fulfilled**. The Tavily tool performs aggressive, multi-engine (Google, DuckDuckGo, News) searches to maximize fill rate.
-
-    **FIXES APPLIED:** The `research_node` now performs multiple **site-targeted searches** (e.g., `site:sec.gov`, `site:company.com 'store locator'`) and **summarizes** each search result block internally to prevent the "Request too large" (413) Groq API error.
 
     **You MUST set both keys in your Streamlit Cloud secrets:**
     - **`TAVILY_API_KEY`**
