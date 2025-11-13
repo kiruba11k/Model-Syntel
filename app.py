@@ -10,7 +10,7 @@ import operator
 # LangGraph and LangChain imports
 from langgraph.graph import StateGraph, START, END
 from langchain_groq import ChatGroq
-from serper import Serper
+from langchain_community.tools.serper import SerperDevTool
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field, ValidationError
 
@@ -31,7 +31,7 @@ try:
         groq_api_key=GROQ_API_KEY,
         temperature=0
     )
-    search_tool = Serper(api_key=SERPER_API_KEY)
+    search_tool = SerperDevTool(api_key=SERPER_API_KEY)
     st.info("Using Groq (Llama 3 70B) for high-speed processing.")
 except Exception as e:
     st.error(f"Failed to initialize Groq or Serper tools: {e}")
@@ -91,7 +91,7 @@ def research_node(state: AgentState) -> AgentState:
     )
     
     # Execute the search tool
-    search_results = search_tool.search(search_query)
+    search_results = search_tool.run(search_query)
     
     # Prompt for LLM to process raw search results
     research_prompt = f"""
