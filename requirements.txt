@@ -6,3 +6,4 @@ langgraph
 pydantic
 tavily-python
 groq
+xlsxwriter
